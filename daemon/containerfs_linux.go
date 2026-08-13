@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/containerd/log"
+	securejoin "github.com/cyphar/filepath-securejoin"
 	"github.com/hashicorp/go-multierror"
 	"github.com/moby/sys/mount"
 	"github.com/moby/sys/symlink"
@@ -19,7 +20,6 @@ import (
 	"github.com/docker/docker/container"
 	"github.com/docker/docker/internal/mounttree"
 	"github.com/docker/docker/internal/unshare"
-	"github.com/docker/docker/pkg/fileutils"
 )
 
 type future struct {
@@ -104,7 +104,7 @@ func (daemon *Daemon) openContainerFS(ctr *container.Container) (_ *containerFSV
 				if err != nil {
 					return err
 				}
-				if err := fileutils.CreateIfNotExists(dest, stat.IsDir()); err != nil {
+				if err := createIfNotExists(ctr.BaseFS, strings.TrimPrefix(m.Destination, "/"), stat.IsDir()); err != nil {
 					return err
 				}
 
@@ -250,6 +250,79 @@ func (vw *containerFSView) Stat(ctx context.Context, path string) (*containertyp
 		return nil
 	})
 	return stat, err
+}
+
+// createIfNotExists creates a file or a directory only if it does not already
+// exist. unsafePath is interpreted relative to rootPath, and every filesystem
+// operation is scoped to rootPath, so that symlinks (including ones planted by
+// a malicious container image) cannot cause anything to be created outside of
+// rootPath. Symlinks which resolve inside rootPath are followed, just as the
+// container itself resolves them; a symlink which would leave rootPath is
+// resolved relative to rootPath instead, as if the container root were "/".
+func createIfNotExists(rootPath, unsafePath string, isDir bool) error {
+	// If the path already resolves to an existing node inside the root there is
+	// nothing to create. The lookup is scoped to rootPath but follows symlinks
+	// which stay inside it, so a destination which is a symlink to another
+	// location in the container filesystem (as /etc/resolv.conf commonly is)
+	// keeps working.
+	if f, err := securejoin.OpenInRoot(rootPath, unsafePath); err == nil {
+		return f.Close()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		// Anything other than a missing path (a non-directory path component,
+		// a symlink loop, ...) is reported instead of silently creating
+		// something in an unexpected place.
+		return err
+	}
+
+	if isDir {
+		return securejoin.MkdirAll(rootPath, unsafePath, 0o755)
+	}
+
+	parent := filepath.Dir(unsafePath)
+	if parent != "." && parent != string(filepath.Separator) {
+		if err := securejoin.MkdirAll(rootPath, parent, 0o755); err != nil {
+			return err
+		}
+	}
+
+	// The path does not exist yet. Resolve it within the root, so that symlink
+	// components -- including a symlink at the final component which points at
+	// a path that does not exist yet, such as the /etc/resolv.conf links into
+	// /run that many images ship -- are followed just as the container resolves
+	// them, while a component which would leave the root is resolved relative
+	// to the root instead.
+	//
+	// The resolved path is only a candidate: everything below re-resolves it
+	// through the root-scoped, race-safe securejoin primitives, so even if the
+	// container mutates the filesystem concurrently nothing can be created
+	// outside of rootPath. Only the destination's own parent directories are
+	// created above, never those of a symlink target, so a symlink pointing
+	// into a directory which does not exist fails rather than materialising it.
+	resolvedPath, err := securejoin.SecureJoin(rootPath, unsafePath)
+	if err != nil {
+		return err
+	}
+	relPath, err := filepath.Rel(filepath.Clean(rootPath), resolvedPath)
+	if err != nil {
+		return err
+	}
+
+	// Resolve the parent directory within the root and create the final
+	// component relative to that directory handle. relPath is already fully
+	// resolved, so O_NOFOLLOW only rejects a symlink planted at the final
+	// component after it was resolved -- a race we want to refuse rather than
+	// follow.
+	parentFd, err := securejoin.OpenInRoot(rootPath, filepath.Dir(relPath))
+	if err != nil {
+		return err
+	}
+	defer parentFd.Close()
+
+	fd, err := unix.Openat(int(parentFd.Fd()), filepath.Base(relPath), unix.O_CREAT|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o755)
+	if err != nil {
+		return &os.PathError{Op: "openat", Path: unsafePath, Err: err}
+	}
+	return unix.Close(fd)
 }
 
 // makeMountRRO makes the mount recursively read-only.
