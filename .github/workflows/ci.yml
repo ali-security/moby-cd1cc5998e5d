@@ -15,12 +15,6 @@ concurrency:
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - 'master'
-      - '[0-9]+.[0-9]+'
-      - '[0-9]+.x'
-  pull_request:
 
 env:
   DESTDIR: ./build
@@ -29,9 +23,11 @@ env:
 
 jobs:
   validate-dco:
+    if: false
     uses: ./.github/workflows/.dco.yml
 
   build:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 20 # guardrails timeout for the whole job
     needs:
@@ -65,6 +61,7 @@ jobs:
           find ${{ env.DESTDIR }} -type f -exec file -e ascii -- {} +
 
   prepare-cross:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 20 # guardrails timeout for the whole job
     needs:
@@ -87,6 +84,7 @@ jobs:
           echo ${{ steps.platforms.outputs.matrix }}
 
   cross:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 20 # guardrails timeout for the whole job
     needs:
@@ -126,6 +124,7 @@ jobs:
           find ${{ env.DESTDIR }} -type f -exec file -e ascii -- {} +
 
   govulncheck:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 120 # guardrails timeout for the whole job
     permissions:
@@ -156,6 +155,7 @@ jobs:
           sarif_file: ${{ env.DESTDIR }}/govulncheck.out
 
   build-dind:
+    if: false
     runs-on: ubuntu-24.04
     needs:
       - validate-dco

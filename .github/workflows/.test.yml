@@ -211,7 +211,6 @@ jobs:
           make -o build test-integration
         env:
           TEST_SKIP_INTEGRATION_CLI: 1
-          TESTCOVERAGE: 1
       -
         name: Prepare reports
         if: always()
@@ -222,7 +221,7 @@ jobs:
           fi
           reportsPath="/tmp/reports/$reportsName"
           echo "TESTREPORTS_NAME=$reportsName" >> $GITHUB_ENV
-          
+
           mkdir -p bundles $reportsPath
           find bundles -path '*/root/*overlay2' -prune -o -type f \( -name '*-report.json' -o -name '*.log' -o -name '*.out' -o -name '*.prof' -o -name '*-report.xml' \) -print | xargs sudo tar -czf /tmp/reports.tar.gz
           tar -xzf /tmp/reports.tar.gz -C $reportsPath
@@ -230,14 +229,6 @@ jobs:
           tree -nh $reportsPath
 
           curl -sSLf localhost:16686/api/traces?service=integration-test-client > $reportsPath/jaeger-trace.json
-      -
-        name: Send to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          directory: ./bundles/test-integration
-          env_vars: RUNNER_OS
-          flags: integration,${{ matrix.mode }}
-          token: ${{ secrets.CODECOV_TOKEN }}  # used to upload coverage reports: https://github.com/moby/buildkit/pull/4660#issue-2142122533
       -
         name: Test daemon logs
         if: always()
@@ -401,7 +392,6 @@ jobs:
           make -o build test-integration
         env:
           TEST_SKIP_INTEGRATION: 1
-          TESTCOVERAGE: 1
           TESTFLAGS: "-test.run (${{ matrix.test }})/"
       -
         name: Prepare reports
@@ -410,7 +400,7 @@ jobs:
           reportsName=$(echo -n "${{ matrix.test }}" | sha256sum | cut -d " " -f 1)
           reportsPath=/tmp/reports/$reportsName
           echo "TESTREPORTS_NAME=$reportsName" >> $GITHUB_ENV
-          
+
           mkdir -p bundles $reportsPath
           echo "${{ matrix.test }}" | tr -s '|' '\n' | tee -a "$reportsPath/tests.txt"
           find bundles -path '*/root/*overlay2' -prune -o -type f \( -name '*-report.json' -o -name '*.log' -o -name '*.out' -o -name '*.prof' -o -name '*-report.xml' \) -print | xargs sudo tar -czf /tmp/reports.tar.gz
@@ -419,14 +409,6 @@ jobs:
           tree -nh $reportsPath
 
           curl -sSLf localhost:16686/api/traces?service=integration-test-client > $reportsPath/jaeger-trace.json
-      -
-        name: Send to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          directory: ./bundles/test-integration
-          env_vars: RUNNER_OS
-          flags: integration-cli
-          token: ${{ secrets.CODECOV_TOKEN }}  # used to upload coverage reports: https://github.com/moby/buildkit/pull/4660#issue-2142122533
       -
         name: Test daemon logs
         if: always()

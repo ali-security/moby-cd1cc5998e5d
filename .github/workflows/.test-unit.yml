@@ -77,14 +77,6 @@ jobs:
           sudo chown -R $(id -u):$(id -g) /tmp/reports
           tree -nh /tmp/reports
       -
-        name: Send to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          directory: ./bundles
-          env_vars: RUNNER_OS
-          flags: unit
-          token: ${{ secrets.CODECOV_TOKEN }}  # used to upload coverage reports: https://github.com/moby/buildkit/pull/4660#issue-2142122533
-      -
         name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4

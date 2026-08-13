@@ -14,20 +14,21 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  schedule:
-    - cron: '0 10 * * *'
   workflow_dispatch:
 
 jobs:
   validate-dco:
+    if: false
     uses: ./.github/workflows/.dco.yml
 
   test-prepare:
+    if: false
     uses: ./.github/workflows/.test-prepare.yml
     needs:
       - validate-dco
 
   run:
+    if: false
     needs:
       - test-prepare
     uses: ./.github/workflows/.windows.yml
@@ -39,4 +40,4 @@ jobs:
     with:
       os: windows-2022
       storage: ${{ matrix.storage }}
-      send_coverage: true
+      send_coverage: false

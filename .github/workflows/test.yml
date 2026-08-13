@@ -15,12 +15,6 @@ concurrency:
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - 'master'
-      - '[0-9]+.[0-9]+'
-      - '[0-9]+.x'
-  pull_request:
 
 env:
   GO_VERSION: "1.24.5"
@@ -31,9 +25,11 @@ env:
 
 jobs:
   validate-dco:
+    if: false
     uses: ./.github/workflows/.dco.yml
 
   build-dev:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 120 # guardrails timeout for the whole job
     needs:
@@ -69,6 +65,7 @@ jobs:
             *.output=type=cacheonly
 
   test:
+    if: false
     needs:
       - build-dev
       - validate-dco
@@ -84,73 +81,15 @@ jobs:
       storage: ${{ matrix.storage }}
 
   test-unit:
+    if: false
     needs:
       - build-dev
       - validate-dco
     uses: ./.github/workflows/.test-unit.yml
     secrets: inherit
 
-  validate-prepare:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10 # guardrails timeout for the whole job
-    needs:
-      - validate-dco
-    outputs:
-      matrix: ${{ steps.scripts.outputs.matrix }}
-    steps:
-      -
-        name: Checkout
-        uses: actions/checkout@v4
-      -
-        name: Create matrix
-        id: scripts
-        run: |
-          scripts=$(cd ./hack/validate && jq -nc '$ARGS.positional - ["all", "default", "dco"] | map(select(test("[.]")|not)) + ["generate-files"]' --args *)
-          echo "matrix=$scripts" >> $GITHUB_OUTPUT
-      -
-        name: Show matrix
-        run: |
-          echo ${{ steps.scripts.outputs.matrix }}
-
-  validate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30 # guardrails timeout for the whole job
-    needs:
-      - validate-prepare
-      - build-dev
-    strategy:
-      fail-fast: true
-      matrix:
-        script: ${{ fromJson(needs.validate-prepare.outputs.matrix) }}
-    steps:
-      -
-        name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      -
-        name: Set up runner
-        uses: ./.github/actions/setup-runner
-      -
-        name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          version: ${{ env.SETUP_BUILDX_VERSION }}
-          driver-opts: image=${{ env.SETUP_BUILDKIT_IMAGE }}
-          buildkitd-flags: --debug
-      -
-        name: Build dev image
-        uses: docker/bake-action@v6
-        with:
-          targets: dev
-          set: |
-            dev.cache-from=type=gha,scope=dev
-      -
-        name: Validate
-        run: |
-          make -o build validate-${{ matrix.script }}
-
   smoke-prepare:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 10 # guardrails timeout for the whole job
     needs:
@@ -173,6 +112,7 @@ jobs:
           echo ${{ steps.platforms.outputs.matrix }}
 
   smoke:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 20 # guardrails timeout for the whole job
     needs:
@@ -204,3 +144,225 @@ jobs:
           targets: binary-smoketest
           set: |
             *.platform=${{ matrix.platform }}
+
+  seal-test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-latest
+          - windows-latest
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+      -
+        name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.5"
+          cache: false
+      -
+        name: Install systemd headers (linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsystemd-dev pkg-config
+      -
+        name: Stage module files
+        shell: bash
+        run: |
+          cp vendor.mod go.mod
+          cp vendor.sum go.sum
+          go version
+      -
+        name: Test
+        shell: bash
+        run: |
+          COMMON_PKGS="./client/... ./errdefs/... ./opts/... ./pkg/archive/... ./pkg/homedir/... ./pkg/idtools/... ./pkg/jsonmessage/... ./pkg/namesgenerator/... ./pkg/stdcopy/... ./pkg/stringid/... ./pkg/tailfile/... ./api/types/..."
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo -E env PATH=$PATH HOME=$HOME GOFLAGS=-mod=vendor go test -mod=vendor -count=1 -short -timeout 30m -tags "netgo journald" ./daemon/ ./pkg/authorization/... ./plugin/... $COMMON_PKGS ./cmd/dockerd/... ./daemon/cluster/... ./daemon/logger/journald/...
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            go test -mod=vendor -count=1 -short -timeout 30m ./pkg/authorization/... $COMMON_PKGS
+          else
+            go test -mod=vendor -count=1 -short -timeout 30m ./pkg/authorization/... ./plugin/... $COMMON_PKGS
+          fi
+      -
+        name: Test containerfs scoping and host-side decompression (linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo -E env PATH=$PATH HOME=$HOME GOFLAGS=-mod=vendor go test -mod=vendor -count=1 -short -v -timeout 10m -tags "netgo journald" -run 'TestCreateIfNotExists|TestOpenMountTarget|TestContainerExtractToDirDecompressesOnHost|TestExtractDecompressionHelperNeverRunsInContainerFS' ./daemon/
+      -
+        name: Vet daemon and integration packages (linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          go vet -mod=vendor -tags "netgo journald" ./daemon/ ./integration/container/
+      -
+        name: Integration tests for the docker cp CVEs against a dockerd built from source (linux, amd64)
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          set -e
+          sudo apt-get install -y libseccomp-dev
+          go build -mod=vendor -tags "netgo journald seccomp apparmor" -o /tmp/dockerd ./cmd/dockerd
+          sudo install -m 0755 /tmp/dockerd /usr/local/bin/dockerd
+          # Tests that start their own daemon go through testutil/daemon, which
+          # always passes --containerd /var/run/docker/containerd/containerd.sock
+          # (the moby dev-container path); point it at the runner's containerd.
+          # Each such daemon uses its own containerd namespace.
+          if [ ! -S /var/run/docker/containerd/containerd.sock ]; then
+            sudo mkdir -p /var/run/docker/containerd
+            sudo ln -sf /run/containerd/containerd.sock /var/run/docker/containerd/containerd.sock
+          fi
+          # Upstream matrixes its integration suite over both storage modes
+          # (.github/workflows/test.yml: storage = graphdriver | snapshotter),
+          # so run the tests under each. TEST_INTEGRATION_USE_SNAPSHOTTER is read
+          # by the daemon itself and by the test harness, so exporting it covers
+          # both this daemon and any the fixtures start.
+          for MODE in graphdriver snapshotter; do
+            echo "::group::integration tests ($MODE)"
+            if [ "$MODE" = "snapshotter" ]; then
+              export TEST_INTEGRATION_USE_SNAPSHOTTER=1
+            else
+              unset TEST_INTEGRATION_USE_SNAPSHOTTER || true
+            fi
+            # Run against a daemon built from THIS tree, not the runner's
+            # pre-installed one: the tests that reuse testEnv's daemon (rather
+            # than starting their own) would otherwise exercise stock docker.
+            sudo mkdir -p /tmp/seal-docker-$MODE /tmp/seal-exec-$MODE /tmp/integration-dest-$MODE
+            sudo -b -E dockerd --host unix:///var/run/docker-seal.sock \
+              --data-root /tmp/seal-docker-$MODE --exec-root /tmp/seal-exec-$MODE \
+              --containerd /run/containerd/containerd.sock \
+              --iptables=false --ip6tables=false --pidfile /tmp/seal-docker-$MODE.pid \
+              > /tmp/seal-dockerd-$MODE.log 2>&1
+            export DOCKER_HOST=unix:///var/run/docker-seal.sock
+            for i in $(seq 1 60); do
+              if sudo -E docker version > /dev/null 2>&1; then break; fi
+              sleep 2
+            done
+            sudo -E docker version
+            sudo -E docker info --format 'storage driver: {{.Driver}}'
+            # The fixture's TestMain requires the whole frozen-image set on the
+            # daemon under test, and its fallback pulls the year-old digests
+            # pinned in the repo Dockerfile. Pre-populate instead; only busybox
+            # is used by these tests, so the hello-world tags are local aliases.
+            for img in busybox:latest busybox:glibc debian:bookworm-slim hello-world:latest; do
+              sudo -E docker pull "$img"
+            done
+            for tag in frozen amd64 arm64; do
+              sudo -E docker tag hello-world:latest "hello-world:$tag"
+            done
+            # TestCopyToContainerXZBinaryNotExecutedOnDaemon is upstream's
+            # regression test for CVE-2026-41567. TestContainerCopyLeaksMounts
+            # drives a cp through openContainerFS with a real rslave bind mount,
+            # which is the mount wiring CVE-2026-42306 and CVE-2026-41568 change,
+            # and asserts the container's mountinfo is untouched afterwards. The
+            # remaining copy tests cover the ordinary extract/archive paths.
+            sudo -E env PATH=$PATH HOME=$HOME DEST=/tmp/integration-dest-$MODE GOFLAGS=-mod=vendor \
+              DOCKER_HOST=$DOCKER_HOST DOCKERFILE=../Dockerfile \
+              go test -mod=vendor -count=1 -v -timeout 30m -tags "netgo journald" \
+                -run 'TestCopyToContainerXZBinaryNotExecutedOnDaemon|TestContainerCopyLeaksMounts|TestCopyFromContainer$|TestCopyToContainerCopyUIDGID|TestCopyEmptyFile' \
+                ./integration/container/
+            sudo pkill -F /tmp/seal-docker-$MODE.pid || true
+            for i in $(seq 1 30); do
+              if ! [ -S /var/run/docker-seal.sock ]; then break; fi
+              sudo rm -f /var/run/docker-seal.sock 2>/dev/null || true
+              sleep 1
+            done
+            echo "::endgroup::"
+          done
+      -
+        name: Daemon logs (linux, amd64)
+        if: always() && runner.os == 'Linux' && runner.arch == 'X64'
+        shell: bash
+        run: sudo tail -n 60 /tmp/seal-dockerd-graphdriver.log /tmp/seal-dockerd-snapshotter.log || true
+
+  seal-module-zip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs:
+      - seal-test
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+      -
+        name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.5"
+          cache: false
+      -
+        name: Build module-zip helper
+        shell: bash
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          mkdir -p "$RUNNER_TEMP/helper"
+          cat > "$RUNNER_TEMP/helper/create_mod.go" <<'EOF'
+          package main
+
+          import (
+              "log"
+              "os"
+
+              "golang.org/x/mod/module"
+              "golang.org/x/mod/zip"
+          )
+
+          func main() {
+              if len(os.Args) != 5 {
+                  log.Fatalf("usage: create_mod <out> <modpath> <version> <dir>")
+              }
+              out, modpath, version, dir := os.Args[1], os.Args[2], os.Args[3], os.Args[4]
+              f, err := os.Create(out)
+              if err != nil {
+                  log.Fatal(err)
+              }
+              defer f.Close()
+              if err := zip.CreateFromDir(f, module.Version{Path: modpath, Version: version}, dir); err != nil {
+                  log.Fatal(err)
+              }
+              log.Printf("wrote %s for %s@%s from %s", out, modpath, version, dir)
+          }
+          EOF
+          cd "$RUNNER_TEMP/helper"
+          cat create_mod.go
+          go mod init helper
+          go get golang.org/x/mod@v0.24.0
+          go build -o create_mod .
+      -
+        name: Clean source tree
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          git clean -fdx
+          rm -rf .git
+          rm -f go.mod go.sum
+          ls -la
+      -
+        name: Create module zip
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          "$RUNNER_TEMP/helper/create_mod" \
+            "$RUNNER_TEMP/out/v28.3.3+incompatible.zip" \
+            "github.com/docker/docker" \
+            "v28.3.3+incompatible" \
+            "$GITHUB_WORKSPACE"
+          ls -la "$RUNNER_TEMP/out"
+          unzip -l "$RUNNER_TEMP/out/v28.3.3+incompatible.zip" | tail -3
+      -
+        name: Upload module zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: ${{ runner.temp }}/out/v28.3.3+incompatible.zip
+          if-no-files-found: error

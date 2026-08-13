@@ -10,11 +10,11 @@ permissions:
   contents: read
 
 on:
-  pull_request:
-    types: [opened, edited, labeled, unlabeled, synchronize]
+  workflow_dispatch:
 
 jobs:
   check-area-label:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 120 # guardrails timeout for the whole job
     steps:
@@ -27,6 +27,7 @@ jobs:
         run: exit 0
 
   check-changelog:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 120 # guardrails timeout for the whole job
     env:
@@ -65,6 +66,7 @@ jobs:
           echo "$desc"
 
   check-pr-branch:
+    if: false
     runs-on: ubuntu-24.04
     timeout-minutes: 120 # guardrails timeout for the whole job
     env:

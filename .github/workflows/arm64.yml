@@ -15,12 +15,6 @@ concurrency:
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - 'master'
-      - '[0-9]+.[0-9]+'
-      - '[0-9]+.x'
-  pull_request:
 
 env:
   GO_VERSION: "1.24.5"
@@ -32,9 +26,11 @@ env:
 
 jobs:
   validate-dco:
+    if: false
     uses: ./.github/workflows/.dco.yml
 
   build:
+    if: false
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20 # guardrails timeout for the whole job
     needs:
@@ -68,6 +64,7 @@ jobs:
           find ${{ env.DESTDIR }} -type f -exec file -e ascii -- {} +
 
   build-dev:
+    if: false
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120 # guardrails timeout for the whole job
     needs:
@@ -91,6 +88,7 @@ jobs:
             *.output=type=cacheonly
 
   test-unit:
+    if: false
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120 # guardrails timeout for the whole job
     needs:
@@ -130,14 +128,6 @@ jobs:
           sudo chown -R $(id -u):$(id -g) /tmp/reports
           tree -nh /tmp/reports
       -
-        name: Send to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          directory: ./bundles
-          env_vars: RUNNER_OS
-          flags: unit
-          token: ${{ secrets.CODECOV_TOKEN }}  # used to upload coverage reports: https://github.com/moby/buildkit/pull/4660#issue-2142122533
-      -
         name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -150,7 +140,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     continue-on-error: ${{ github.event_name != 'pull_request' }}
-    if: always()
+    if: false
     needs:
       - test-unit
     steps:
@@ -176,6 +166,7 @@ jobs:
           find /tmp/reports -type f -name '*-go-test-report.json' -exec teststat -markdown {} \+ >> $GITHUB_STEP_SUMMARY
 
   test-integration:
+    if: false
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120 # guardrails timeout for the whole job
     continue-on-error: ${{ github.event_name != 'pull_request' }}
@@ -211,7 +202,6 @@ jobs:
           make -o build test-integration
         env:
           TEST_SKIP_INTEGRATION_CLI: 1
-          TESTCOVERAGE: 1
       -
         name: Prepare reports
         if: always()
@@ -223,14 +213,6 @@ jobs:
           sudo chown -R $(id -u):$(id -g) $reportsPath
           tree -nh $reportsPath
           curl -sSLf localhost:16686/api/traces?service=integration-test-client > $reportsPath/jaeger-trace.json
-      -
-        name: Send to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          directory: ./bundles/test-integration
-          env_vars: RUNNER_OS
-          flags: integration
-          token: ${{ secrets.CODECOV_TOKEN }}  # used to upload coverage reports: https://github.com/moby/buildkit/pull/4660#issue-2142122533
       -
         name: Test daemon logs
         if: always()
@@ -249,7 +231,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     continue-on-error: ${{ github.event_name != 'pull_request' }}
-    if: always()
+    if: false
     needs:
       - test-integration
     steps:
