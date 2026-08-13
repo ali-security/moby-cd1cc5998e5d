@@ -215,6 +215,109 @@ func TestCreateIfNotExists(t *testing.T) {
 	})
 }
 
+func TestOpenMountTarget(t *testing.T) {
+	t.Run("resolves within root", func(t *testing.T) {
+		root := t.TempDir()
+		assert.NilError(t, os.Mkdir(filepath.Join(root, "dest"), 0o755))
+
+		f, targetPath, err := openMountTarget(root, "dest")
+		assert.NilError(t, err)
+		defer f.Close()
+
+		resolved, err := os.Readlink(targetPath)
+		assert.NilError(t, err)
+
+		want, err := os.Stat(filepath.Join(root, "dest"))
+		assert.NilError(t, err)
+		got, err := os.Stat(resolved)
+		assert.NilError(t, err)
+		assert.Check(t, os.SameFile(want, got), "fd does not refer to the in-root destination")
+	})
+	t.Run("absolute symlink at the destination cannot escape the root", func(t *testing.T) {
+		root, outside := scratchRootAndOutside(t)
+		// An absolute symlink is resolved relative to the root, so the
+		// path it can ever reach is <root>/<outside>, not <outside>.
+		mirrored := filepath.Join(root, outside)
+		assert.NilError(t, os.MkdirAll(mirrored, 0o755))
+		assert.NilError(t, os.Symlink(outside, filepath.Join(root, "dest")))
+
+		f, targetPath, err := openMountTarget(root, "dest")
+		assert.NilError(t, err)
+		defer f.Close()
+
+		resolved, err := os.Readlink(targetPath)
+		assert.NilError(t, err)
+
+		inRoot, err := os.Stat(mirrored)
+		assert.NilError(t, err)
+		got, err := os.Stat(resolved)
+		assert.NilError(t, err)
+		assert.Check(t, os.SameFile(inRoot, got), "fd escaped the root, resolved to %q", resolved)
+
+		hostDir, err := os.Stat(outside)
+		assert.NilError(t, err)
+		assert.Check(t, !os.SameFile(hostDir, got), "fd resolved to the host directory %q", outside)
+	})
+	t.Run("parent traversal is clamped to root", func(t *testing.T) {
+		root, _ := scratchRootAndOutside(t)
+		assert.NilError(t, os.MkdirAll(filepath.Join(root, "a", "b"), 0o755))
+
+		f, targetPath, err := openMountTarget(root, filepath.Join("a", "b", "..", "..", "..", ".."))
+		assert.NilError(t, err)
+		defer f.Close()
+
+		resolved, err := os.Readlink(targetPath)
+		assert.NilError(t, err)
+
+		rootInfo, err := os.Stat(root)
+		assert.NilError(t, err)
+		got, err := os.Stat(resolved)
+		assert.NilError(t, err)
+		assert.Check(t, os.SameFile(rootInfo, got), "traversal escaped the root, resolved to %q", resolved)
+	})
+	t.Run("fd pins the destination against a symlink swap", func(t *testing.T) {
+		// This is the vulnerability: between resolving the mount
+		// destination by name and mounting onto it, a process inside the
+		// container can swap the destination for a symlink pointing at a
+		// host path. Using the fd as the mount target defeats that.
+		root, outside := scratchRootAndOutside(t)
+		dest := filepath.Join(root, "dest")
+		assert.NilError(t, os.Mkdir(dest, 0o755))
+
+		f, targetPath, err := openMountTarget(root, "dest")
+		assert.NilError(t, err)
+		defer f.Close()
+
+		// Perform the swap after the destination has been resolved.
+		assert.NilError(t, os.Rename(dest, filepath.Join(root, "stashed")))
+		assert.NilError(t, os.Symlink(outside, dest))
+
+		// By-name resolution (the pre-fix behaviour) now lands on the
+		// host directory...
+		byName, err := filepath.EvalSymlinks(dest)
+		assert.NilError(t, err)
+		hostDir, err := os.Stat(outside)
+		assert.NilError(t, err)
+		byNameInfo, err := os.Stat(byName)
+		assert.NilError(t, err)
+		assert.Check(t, os.SameFile(hostDir, byNameInfo),
+			"test setup is not reproducing the swap: %q did not resolve to %q", dest, outside)
+
+		// ...while the fd-pinned target still refers to the original
+		// in-root inode, which is what gets mounted onto.
+		resolved, err := os.Readlink(targetPath)
+		assert.NilError(t, err)
+		pinned, err := os.Stat(resolved)
+		assert.NilError(t, err)
+		stashed, err := os.Stat(filepath.Join(root, "stashed"))
+		assert.NilError(t, err)
+		assert.Check(t, os.SameFile(stashed, pinned),
+			"mount target followed the symlink swap, resolved to %q", resolved)
+		assert.Check(t, !os.SameFile(hostDir, pinned),
+			"mount target was redirected to the host path %q", outside)
+	})
+}
+
 // outsideBaseName is the base name of the out-of-root scratch directory created
 // by scratchRootAndOutside. It doubles as the path an absolute in-container
 // symlink to that directory resolves to once scoped to the root.
